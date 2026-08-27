@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EPER TECH — Telefon Yayını</title>
+  <style>
+    :root { color-scheme: dark; font-family: Arial, sans-serif; }
+    body { max-width: 560px; margin: 0 auto; padding: 24px; background: #03060a; color: #e6f6ff; }
+    h1 { color: #4fd8ff; }
+    input, button { width: 100%; padding: 14px; margin: 8px 0; box-sizing: border-box; font-size: 16px; }
+    input { background: #0a1620; border: 1px solid #4fd8ff; color: inherit; }
+    button { background: #4fd8ff; border: 0; color: #03060a; font-weight: bold; }
+    video { width: 100%; margin-top: 16px; background: #000; }
+    #status { color: #b7f3ff; min-height: 24px; }
+    .room { font-size: 28px; letter-spacing: .18em; color: #4fd8ff; }
+  </style>
+</head>
+<body>
+  <h1>Telefon WebRTC Yayını</h1>
+  <p>Bu sayfayı telefonda HTTPS üzerinden aç. Oda kodunu bilgisayardaki arayüze gir.</p>
+  <input id="room" maxlength="8" placeholder="Oda kodu (boşsa otomatik)" aria-label="Oda kodu">
+  <button id="start" type="button">Kamerayı Aç ve Yayını Başlat</button>
+  <div id="roomDisplay" class="room"></div>
+  <div id="status">yayın bekleniyor</div>
+  <video id="preview" autoplay playsinline muted></video>
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyAJJUyiEX5tNM-BZdrMDSn0FxvqkEFYIGE",
+      authDomain: "epertech-4978b.firebaseapp.com",
+      projectId: "epertech-4978b",
+      storageBucket: "epertech-4978b.firebasestorage.app",
+      messagingSenderId: "900616213611",
+      appId: "1:900616213611:web:96313b2e08161b4ab78d2e",
+      measurementId: "G-84215X34YH"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const statusEl = document.getElementById('status');
+    const roomInput = document.getElementById('room');
+    const roomDisplay = document.getElementById('roomDisplay');
+    const preview = document.getElementById('preview');
+    let peer;
+    let stream;
+    let answerUnsubscribe;
+    let viewerCandidateUnsubscribe;
+    let pendingViewerCandidates = [];
+
+    function setStatus(text) { statusEl.textContent = text; }
+    function makeRoomId() {
+      return Math.random().toString(36).slice(2, 8).toUpperCase();
+    }
+
+    async function startBroadcast() {
+      if (peer) peer.close();
+      if (answerUnsubscribe) answerUnsubscribe();
+      if (viewerCandidateUnsubscribe) viewerCandidateUnsubscribe();
+      pendingViewerCandidates = [];
+      const roomId = (roomInput.value.trim() || makeRoomId()).toUpperCase();
+      roomInput.value = roomId;
+      roomDisplay.textContent = 'ODA: ' + roomId;
+      setStatus('kamera izni bekleniyor…');
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      preview.srcObject = stream;
+      peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+      stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+      const roomRef = db.collection('webrtcRooms').doc(roomId);
+      peer.onicecandidate = (event) => {
+        if (event.candidate) roomRef.collection('publisherCandidates').add(event.candidate.toJSON());
+      };
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await roomRef.set({ offer: { type: offer.type, sdp: offer.sdp }, status: 'waiting' });
+      answerUnsubscribe = roomRef.onSnapshot(async (snapshot) => {
+        const answer = snapshot.data() && snapshot.data().answer;
+        if (answer && !peer.currentRemoteDescription) await peer.setRemoteDescription(new RTCSessionDescription(answer));
+      });
+      viewerCandidateUnsubscribe = roomRef.collection('viewerCandidates').onSnapshot((snapshot) => {
+        snapshot.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+          const candidate = change.doc.data();
+          if (peer.remoteDescription) peer.addIceCandidate(new RTCIceCandidate(candidate));
+          else pendingViewerCandidates.push(candidate);
+        });
+      });
+      peer.onconnectionstatechange = () => setStatus(
+        peer.connectionState === 'connected' ? 'yayın bilgisayara aktarılıyor' : 'bağlantı: ' + peer.connectionState
+      );
+      peer.addEventListener('signalingstatechange', async () => {
+        if (peer.remoteDescription && pendingViewerCandidates.length) {
+          const candidates = pendingViewerCandidates;
+          pendingViewerCandidates = [];
+          for (const candidate of candidates) await peer.addIceCandidate(new RTCIceCandidate(candidate));
+        }
+      });
+      setStatus('oda hazır, bilgisayardan bağlanılabilir');
+    }
+
+    document.getElementById('start').addEventListener('click', () => {
+      startBroadcast().catch((error) => setStatus('yayın başlatılamadı: ' + error.message));
+    });
+  </script>
+</body>
+</html>
