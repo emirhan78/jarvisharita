@@ -20,7 +20,8 @@
   <h1>Telefon WebRTC Yayını</h1>
   <p>Bu sayfayı telefonda HTTPS üzerinden aç. Oda kodunu bilgisayardaki arayüze gir.</p>
   <input id="room" maxlength="8" placeholder="Oda kodu (boşsa otomatik)" aria-label="Oda kodu">
-  <button id="start" type="button">Kamerayı Aç ve Yayını Başlat</button>
+  <button id="start" type="button">Arka Kamerayı Aç ve Yayını Başlat</button>
+  <button id="switchCamera" type="button" disabled>Ön Kameraya Geç</button>
   <div id="roomDisplay" class="room"></div>
   <div id="status">yayın bekleniyor</div>
   <video id="preview" autoplay playsinline muted></video>
@@ -48,6 +49,7 @@
     let answerUnsubscribe;
     let viewerCandidateUnsubscribe;
     let pendingViewerCandidates = [];
+    let usingRearCamera = true;
 
     function setStatus(text) { statusEl.textContent = text; }
     function makeRoomId() {
@@ -63,7 +65,10 @@
       roomInput.value = roomId;
       roomDisplay.textContent = 'ODA: ' + roomId;
       setStatus('kamera izni bekleniyor…');
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: usingRearCamera ? 'environment' : 'user' } },
+        audio: true
+      });
       preview.srcObject = stream;
       peer = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
       stream.getTracks().forEach((track) => peer.addTrack(track, stream));
@@ -97,10 +102,29 @@
         }
       });
       setStatus('oda hazır, bilgisayardan bağlanılabilir');
+      document.getElementById('switchCamera').disabled = false;
     }
 
     document.getElementById('start').addEventListener('click', () => {
       startBroadcast().catch((error) => setStatus('yayın başlatılamadı: ' + error.message));
+    });
+    document.getElementById('switchCamera').addEventListener('click', async () => {
+      usingRearCamera = !usingRearCamera;
+      if (stream) stream.getTracks().forEach((track) => track.stop());
+      try {
+        const nextStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: usingRearCamera ? 'environment' : 'user' } },
+          audio: true
+        });
+        const videoSender = peer.getSenders().find((sender) => sender.track && sender.track.kind === 'video');
+        if (videoSender) await videoSender.replaceTrack(nextStream.getVideoTracks()[0]);
+        stream = nextStream;
+        preview.srcObject = stream;
+        document.getElementById('switchCamera').textContent = usingRearCamera ? 'Ön Kameraya Geç' : 'Arka Kameraya Geç';
+        setStatus(usingRearCamera ? 'arka kamera yayında' : 'ön kamera yayında');
+      } catch (error) {
+        setStatus('kamera değiştirilemedi: ' + error.message);
+      }
     });
   </script>
 </body>
